@@ -1,0 +1,35 @@
+# ─── AI Internship Matcher — Scraper Dependencies ─────────────────────────────
+# Install with: pip install -r scraper_requirements.txt
+# Then download spaCy model: python -m spacy download en_core_web_sm
+
+# ── Web Scraping — Browser ──────────────────────────────────────────────────
+undetected-chromedriver==3.5.5   # Anti-bot Chrome driver (patches webdriver flags)
+selenium==4.20.0                  # Browser automation framework
+
+# ── Web Scraping — HTTP + HTML ──────────────────────────────────────────────
+requests==2.31.0                  # HTTP client for requests-based scrapers
+beautifulsoup4==4.12.3            # HTML parser for server-rendered pages
+lxml==5.2.1                       # Fast XML/HTML parser (BS4 backend)
+
+# ── Task Queue & Scheduling ─────────────────────────────────────────────────
+celery==5.3.6                     # Distributed task queue
+redis==5.0.4                      # Redis client (broker + dedup cache)
+celery[redis]==5.3.6              # Celery with Redis support
+flower==2.0.1                     # Celery monitoring dashboard (optional)
+
+# ── Database ────────────────────────────────────────────────────────────────
+sqlalchemy==2.0.30                # ORM — same version as FastAPI backend
+psycopg2-binary==2.9.9            # PostgreSQL adapter
+
+# ── CLI & Progress ──────────────────────────────────────────────────────────
+tqdm==4.66.2                      # Progress bars for CLI manual runs
+
+# ── Configuration ────────────────────────────────────────────────────────────
+python-dotenv==1.0.1              # Load .env variables
+
+# ── NLP (skill extraction — same as FastAPI backend) ────────────────────────
+spacy==3.7.4                      # NLP tokenizer for n-gram skill matching
+# Run after install: python -m spacy download en_core_web_sm
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+python-dateutil==2.9.0            # Flexible date string parsing

@@ -1,0 +1,109 @@
+# ─── Dockerfile — AI Internship Matcher Scraper ───────────────────────────────
+#
+# Builds a container that can run:
+#   1. Manual scrapes:  docker run scraper python run_scraper.py --site rozee
+#   2. Celery worker:   docker run scraper celery -A scraper.tasks worker
+#   3. Celery beat:     docker run scraper celery -A scraper.tasks beat
+#
+# Build:   docker build -t internship-scraper .
+# Run:     docker run --env-file .env internship-scraper python run_scraper.py
+#
+# For full stack with Redis + DB, use docker-compose (see docker-compose.yml).
+
+FROM python:3.11-slim-bookworm
+
+# ─── System dependencies ───────────────────────────────────────────────────────
+# Google Chrome and its dependencies must be installed inside the container
+# for Selenium/undetected-chromedriver to work in headless mode.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Chrome dependencies
+    wget \
+    gnupg \
+    ca-certificates \
+    apt-transport-https \
+    # Chrome runtime dependencies
+    libx11-6 \
+    libx11-xcb1 \
+    libxcb1 \
+    libxcomposite1 \
+    libxcursor1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxi6 \
+    libxrandr2 \
+    libxrender1 \
+    libxss1 \
+    libxtst6 \
+    # Font rendering (needed for headless Chrome)
+    fonts-liberation \
+    libasound2 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libcairo2 \
+    libcups2 \
+    libdbus-1-3 \
+    libexpat1 \
+    libgbm1 \
+    libgdk-pixbuf2.0-0 \
+    libglib2.0-0 \
+    libgtk-3-0 \
+    libnspr4 \
+    libnss3 \
+    libpango-1.0-0 \
+    libpangocairo-1.0-0 \
+    libxkbcommon0 \
+    # PostgreSQL client for psycopg2
+    libpq-dev \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# ─── Install Google Chrome (stable) ───────────────────────────────────────────
+# undetected-chromedriver matches itself to the installed Chrome version automatically.
+RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | \
+    gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] \
+    http://dl.google.com/linux/chrome/deb/ stable main" \
+    > /etc/apt/sources.list.d/google-chrome.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends google-chrome-stable && \
+    rm -rf /var/lib/apt/lists/*
+
+# ─── Working directory ─────────────────────────────────────────────────────────
+WORKDIR /app
+
+# ─── Python dependencies ───────────────────────────────────────────────────────
+# Copy requirements first to leverage Docker layer caching.
+# If requirements don't change, this layer is reused across rebuilds.
+COPY scraper_requirements.txt .
+COPY requirements.txt .
+
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir -r scraper_requirements.txt
+
+# ─── Download spaCy model ──────────────────────────────────────────────────────
+RUN python -m spacy download en_core_web_sm
+
+# ─── Copy application code ─────────────────────────────────────────────────────
+COPY . .
+
+# ─── Create log and upload directories ────────────────────────────────────────
+RUN mkdir -p logs uploads/resumes
+
+# ─── Chrome flags for container environment ────────────────────────────────────
+# These are needed because Docker containers don't have a display server or
+# access to /dev/shm with sufficient space for Chrome's shared memory.
+ENV CHROME_FLAGS="--no-sandbox --disable-dev-shm-usage --disable-gpu --headless=new"
+
+# ─── Non-root user for security ───────────────────────────────────────────────
+# Chrome refuses to run as root in some environments. Running as a non-root
+# user is also a security best practice for containers.
+RUN groupadd -r scraper && useradd -r -g scraper -d /app scraper && \
+    chown -R scraper:scraper /app
+USER scraper
+
+# ─── Default command ───────────────────────────────────────────────────────────
+# Override with docker run ... <command> for specific modes.
+# Default runs the full scrape pipeline once.
+CMD ["python", "run_scraper.py", "--site", "all"]
