@@ -6,6 +6,24 @@ const client = axios.create({
   timeout: 30000,
 })
 
+const getErrorMessage = (error) => {
+  const detail = error.response?.data?.detail
+
+  if (typeof detail === 'string') return detail
+
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => item?.msg || item?.message || JSON.stringify(item))
+      .join('\n')
+  }
+
+  if (detail && typeof detail === 'object') {
+    return detail.msg || detail.message || JSON.stringify(detail)
+  }
+
+  return error.response?.data?.message || error.message || 'An unexpected error occurred'
+}
+
 // Request interceptor: attach JWT token
 client.interceptors.request.use(
   (config) => {
@@ -28,11 +46,7 @@ client.interceptors.response.use(
       localStorage.removeItem('auth_user')
       window.location.href = '/login'
     }
-    const message =
-      error.response?.data?.detail ||
-      error.response?.data?.message ||
-      error.message ||
-      'An unexpected error occurred'
+    const message = getErrorMessage(error)
     return Promise.reject(new Error(message))
   }
 )

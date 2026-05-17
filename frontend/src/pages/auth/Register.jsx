@@ -26,6 +26,8 @@ export default function Register() {
     else if (!/\S+@\S+\.\S+/.test(form.email)) e.email = 'Invalid email format'
     if (!form.password) e.password = 'Password is required'
     else if (form.password.length < 8) e.password = 'Password must be at least 8 characters'
+    else if (!/[A-Za-z]/.test(form.password)) e.password = 'Password must contain at least one letter'
+    else if (!/\d/.test(form.password)) e.password = 'Password must contain at least one digit'
     if (form.password !== form.confirm_password) e.confirm_password = 'Passwords do not match'
     if (!form.university.trim()) e.university = 'University is required'
     if (!form.major) e.major = 'Please select your major'
