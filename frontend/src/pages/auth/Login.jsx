@@ -28,6 +28,7 @@ export default function Login() {
     setLoading(true)
     try {
       const { access_token } = await login(form)
+      localStorage.setItem('auth_token', access_token)
       const user = await getMe()
       setAuth(access_token, user)
       toast.success(`Welcome back, ${user.full_name?.split(' ')[0]}!`)
