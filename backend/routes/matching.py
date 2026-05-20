@@ -131,8 +131,8 @@ def ensure_match_scores(user_id: int, db: Session) -> bool:
         return False
 
     student_skills = _parse_skills(resume.skills_json)
-    if len(student_skills) < 3:
-        logger.info("User %s has only %d skills, need ≥3 for matching", user_id, len(student_skills))
+    if len(student_skills) < 1:
+        logger.info("User %s has no skills, need at least 1 for matching", user_id)
         return False
 
     jobs = db.query(Internship).filter(Internship.is_active == True).all()
@@ -246,7 +246,7 @@ def get_skill_gap(
     # ── Ensure match scores are populated and fresh ───────────────────────────
     has_scores = ensure_match_scores(current_user.id, db)
     if not has_scores:
-        return SkillGapResponse(missing_skills=[])
+        return SkillGapResponse(user_skills=[], missing_skills=[])
 
     # ── Load student's skills ──────────────────────────────────────────────────
     resume = (
@@ -256,7 +256,7 @@ def get_skill_gap(
         .first()
     )
     if not resume:
-        return SkillGapResponse(missing_skills=[])
+        return SkillGapResponse(user_skills=[], missing_skills=[])
     student_skills = _parse_skills(resume.skills_json)
 
     # ── Load top-10 matched internships (from pre-computed scores) ─────────────
@@ -268,7 +268,7 @@ def get_skill_gap(
         .all()
     )
     if not top_scores:
-        return SkillGapResponse(missing_skills=[])
+        return SkillGapResponse(user_skills=student_skills, missing_skills=[])
 
     # ── Aggregate missing skills across top-10 jobs ────────────────────────────
     missing_counter: Counter = Counter()
@@ -293,5 +293,5 @@ def get_skill_gap(
         for skill, count in missing_counter.most_common()   # Sorted by frequency
     ]
 
-    return SkillGapResponse(missing_skills=gap_items)
+    return SkillGapResponse(user_skills=student_skills, missing_skills=gap_items)
 

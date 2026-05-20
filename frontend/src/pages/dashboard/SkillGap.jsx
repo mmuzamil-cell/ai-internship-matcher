@@ -54,11 +54,10 @@ export default function SkillGap() {
   }
 
   const missingSkills = gapData?.missing_skills?.slice(0, 10) || []
-  // Backend only returns missing_skills; profile completeness is estimated from missing count
+  const userSkills = gapData?.user_skills || []
+  const userHas = userSkills.length
   const totalMissing = gapData?.missing_skills?.length || 0
-  const top20 = Math.max(totalMissing, 20)
-  // We estimate skills the user has as complement of missing (max 20 total)
-  const userHas = Math.max(0, top20 - totalMissing)
+  const totalSkills = userHas + totalMissing
 
   const barData = {
     labels: missingSkills.map((s) => s.skill_name || s.skill || s.name || s),
@@ -135,18 +134,18 @@ export default function SkillGap() {
               <div>
                 <h2 className="font-display text-lg font-semibold text-white">Profile Completeness</h2>
                 <p className="text-slate-400 text-sm mt-1">
-                  You have <span className="text-sky-400 font-semibold">{userHas}</span> of the top {top20} most demanded skills
+                  You have <span className="text-sky-400 font-semibold">{userHas}</span> of the {totalSkills} total skills required by matches
                 </p>
               </div>
               <span className="font-display text-3xl font-bold text-sky-400">
-                {Math.round((userHas / top20) * 100)}%
+                {Math.round((userHas / (totalSkills || 1)) * 100)}%
               </span>
             </div>
             <div className="h-3 bg-slate-700 rounded-full overflow-hidden">
               <motion.div
                 className="h-full bg-gradient-to-r from-sky-500 to-blue-500 rounded-full"
                 initial={{ width: 0 }}
-                animate={{ width: `${(userHas / top20) * 100}%` }}
+                animate={{ width: `${(userHas / (totalSkills || 1)) * 100}%` }}
                 transition={{ duration: 1, ease: 'easeOut', delay: 0.3 }}
               />
             </div>

@@ -16,7 +16,7 @@ passlib[bcrypt]==1.7.4            # Secure password hashing with bcrypt
 python-multipart==0.0.9           # Form data & file upload parsing
 
 # ── AI / NLP ───────────────────────────────────────────────────────────────
-sentence-transformers==2.7.0   # Semantic embeddings (all-MiniLM-L6-v2)
+# sentence-transformers==2.7.0   # Optional: uncomment for local semantic AI matching (requires 1GB+ RAM, causes OOM on Render free tier)
 spacy==3.7.4                   # NLP pipeline for skill extraction
 # After install, run: python -m spacy download en_core_web_sm
 

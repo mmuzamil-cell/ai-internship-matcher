@@ -18,11 +18,14 @@ logger = logging.getLogger(__name__)
 _MODEL_NAME = "all-MiniLM-L6-v2"
 _model = None
 _model_lock = threading.Lock()
+_use_fallback = False
 
 
 def _get_model():
-    """Load and return the sentence-transformer model on first match request."""
-    global _model
+    """Load and return the sentence-transformer model on first match request, or None if unavailable."""
+    global _model, _use_fallback
+    if _use_fallback:
+        return None
     if _model is None:
         with _model_lock:
             if _model is None:  # double-check locking
@@ -33,11 +36,12 @@ def _get_model():
                     _model = SentenceTransformer(_MODEL_NAME)
                     logger.info("Model loaded successfully.")
                 except Exception as exc:
-                    logger.error("Failed to load sentence-transformer model: %s", exc)
-                    raise RuntimeError(
-                        f"Sentence-transformer model '{_MODEL_NAME}' is not loaded. "
-                        "Install sentence-transformers and make sure the model is available."
-                    ) from exc
+                    logger.warning(
+                        "Could not load SentenceTransformer (probably running in low-memory environment like Render). "
+                        "Falling back to high-performance keyword matching. Details: %s", exc
+                    )
+                    _use_fallback = True
+                    return None
     return _model
 
 
@@ -48,6 +52,8 @@ def _encode(text: str) -> np.ndarray:
     normalize_embeddings=True means dot-product == cosine similarity.
     """
     model = _get_model()
+    if model is None:
+        raise RuntimeError("Sentence-transformer model is not loaded.")
     return model.encode(text, normalize_embeddings=True, show_progress_bar=False)
 
 
@@ -75,38 +81,80 @@ def compute_match_scores(
     internships: List[dict],
 ) -> List[Tuple[int, float]]:
     """
-    Compute cosine similarity scores between a student and all internships.
-
-    Returns a list of (internship_id, score) tuples sorted by score descending.
+    Compute similarity scores between a student and all internships.
+    Uses Semantic embeddings if available, otherwise falls back to a robust keyword overlap score.
     """
     if not student_skills or not internships:
         return []
 
-    student_text = " ".join(student_skills)
-    student_vec = _encode(student_text)
-
-    job_texts = []
-    valid_jobs = []
-    for job in internships:
-        job_text = _internship_to_text(
-            required_skills_json=job.get("required_skills", ""),
-            description=job.get("description", ""),
-        )
-        if job_text:
-            job_texts.append(job_text)
-            valid_jobs.append(job)
-
-    if not job_texts:
-        return []
-
-    # Batch encode all job texts
     model = _get_model()
-    job_vecs = model.encode(job_texts, normalize_embeddings=True, show_progress_bar=False)
+    if model is not None:
+        try:
+            student_text = " ".join(student_skills)
+            student_vec = _encode(student_text)
 
-    results: List[Tuple[int, float]] = []
-    for job, job_vec in zip(valid_jobs, job_vecs):
-        score = _cosine_similarity(student_vec, job_vec)
-        results.append((job["id"], score))
+            job_texts = []
+            valid_jobs = []
+            for job in internships:
+                job_text = _internship_to_text(
+                    required_skills_json=job.get("required_skills", ""),
+                    description=job.get("description", ""),
+                )
+                if job_text:
+                    job_texts.append(job_text)
+                    valid_jobs.append(job)
+
+            if job_texts:
+                job_vecs = model.encode(job_texts, normalize_embeddings=True, show_progress_bar=False)
+                results: List[Tuple[int, float]] = []
+                for job, job_vec in zip(valid_jobs, job_vecs):
+                    score = _cosine_similarity(student_vec, job_vec)
+                    results.append((job["id"], float(score)))
+
+                # Add remaining jobs with 0 score
+                scored_ids = {r[0] for r in results}
+                for job in internships:
+                    if job["id"] not in scored_ids:
+                        results.append((job["id"], 0.0))
+
+                results.sort(key=lambda item: item[1], reverse=True)
+                return results
+        except Exception as exc:
+            logger.error("Error during semantic match execution, falling back: %s", exc)
+
+    # Keyword Matching Fallback (Uses 0MB RAM, extremely fast, works on Render Free Tier)
+    logger.info("Running lightweight keyword matching fallback.")
+    student_set = {s.lower().strip() for s in student_skills if s}
+    results = []
+    for job in internships:
+        job_skills_list = []
+        req_skills = job.get("required_skills")
+        if req_skills:
+            try:
+                if isinstance(req_skills, list):
+                    job_skills_list = req_skills
+                elif isinstance(req_skills, str):
+                    job_skills_list = json.loads(req_skills)
+            except Exception:
+                job_skills_list = []
+
+        job_set = {j.lower().strip() for j in job_skills_list if j}
+
+        # 1. Direct skills overlap
+        if job_set:
+            overlap = student_set & job_set
+            skills_score = len(overlap) / len(job_set)
+        else:
+            skills_score = 0.0
+
+        # 2. Description keyword search
+        desc_lower = (job.get("description") or "").lower()
+        desc_matches = sum(1 for s in student_set if s in desc_lower)
+        desc_score = desc_matches / max(len(student_set), 5)
+
+        # Combined score (70% direct skill, 30% description context)
+        score = 0.7 * skills_score + 0.3 * min(desc_score, 1.0)
+        results.append((job["id"], float(score)))
 
     results.sort(key=lambda item: item[1], reverse=True)
     return results

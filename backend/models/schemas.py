@@ -181,4 +181,5 @@ class SkillGapItem(BaseModel):
 
 
 class SkillGapResponse(BaseModel):
+    user_skills: List[str]
     missing_skills: List[SkillGapItem]
