@@ -8,7 +8,7 @@ This module is the single source of truth for all database-related setup:
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from sqlalchemy import (
@@ -20,6 +20,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     create_engine,
 )
 from sqlalchemy.orm import DeclarativeBase, Session, relationship, sessionmaker
@@ -80,7 +81,7 @@ class User(Base):
     university    = Column(String(200), nullable=True)
     major         = Column(String(150), nullable=True)
     is_admin      = Column(Boolean, default=False)            # Admin flag for protected routes
-    created_at    = Column(DateTime, default=datetime.utcnow)
+    created_at    = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     # Relationships — lazy="dynamic" defers query until accessed
     resumes      = relationship("Resume", back_populates="owner", cascade="all, delete-orphan")
@@ -102,7 +103,7 @@ class Resume(Base):
     file_path      = Column(String(512), nullable=False)      # Absolute path on server disk
     extracted_text = Column(Text, nullable=True)              # Raw text pulled from PDF
     skills_json    = Column(Text, nullable=True)              # JSON array of detected skills
-    uploaded_at    = Column(DateTime, default=datetime.utcnow)
+    uploaded_at    = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     owner = relationship("User", back_populates="resumes")
 
@@ -125,7 +126,7 @@ class Internship(Base):
     deadline        = Column(DateTime, nullable=True)
     source_url      = Column(String(512), nullable=True)       # Original job posting URL
     source_site     = Column(String(100), nullable=True)       # "LinkedIn", "Rozee.pk", etc.
-    scraped_at      = Column(DateTime, default=datetime.utcnow)
+    scraped_at      = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     is_active       = Column(Boolean, default=True, index=True)  # False = expired/removed
 
     applications = relationship("Application", back_populates="internship")
@@ -138,12 +139,13 @@ class Application(Base):
     Status transitions: applied → reviewing → accepted | rejected
     """
     __tablename__ = "applications"
+    __table_args__ = (UniqueConstraint("user_id", "internship_id", name="uq_user_internship"),)
 
     id             = Column(Integer, primary_key=True, index=True)
     user_id        = Column(Integer, ForeignKey("users.id"), nullable=False)
     internship_id  = Column(Integer, ForeignKey("internships.id"), nullable=False)
     status         = Column(String(50), default="applied")    # applied/reviewing/rejected/accepted
-    applied_at     = Column(DateTime, default=datetime.utcnow)
+    applied_at     = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     notes          = Column(Text, nullable=True)              # Student's personal notes
 
     student     = relationship("User", back_populates="applications")
@@ -157,12 +159,13 @@ class MatchScore(Base):
     Re-computed whenever the student uploads a new resume.
     """
     __tablename__ = "match_scores"
+    __table_args__ = (UniqueConstraint("user_id", "internship_id", name="uq_match_score"),)
 
     id             = Column(Integer, primary_key=True, index=True)
     user_id        = Column(Integer, ForeignKey("users.id"), nullable=False)
     internship_id  = Column(Integer, ForeignKey("internships.id"), nullable=False)
     score          = Column(Float, nullable=False)            # 0.0 (no match) → 1.0 (perfect)
-    computed_at    = Column(DateTime, default=datetime.utcnow)
+    computed_at    = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     student    = relationship("User", back_populates="match_scores")
     internship = relationship("Internship", back_populates="match_scores")
@@ -185,11 +188,12 @@ def get_db():
     try:
         yield db
     finally:
+        db.rollback()
         db.close()
 
 # Import ScraperStats so SQLAlchemy includes it in create_all()
 # (scraper table lives in same DB as the backend)
 try:
     from scraper.db_additions import ScraperStats  # noqa: F401
-except ImportError:
+except ModuleNotFoundError:
     pass  # Scraper not installed — table will be created when scraper runs

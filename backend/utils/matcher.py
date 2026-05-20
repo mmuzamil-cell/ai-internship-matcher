@@ -8,6 +8,7 @@ auth, jobs, or resume endpoints become available.
 
 import json
 import logging
+import threading
 from typing import List, Tuple
 
 import numpy as np
@@ -16,24 +17,27 @@ logger = logging.getLogger(__name__)
 
 _MODEL_NAME = "all-MiniLM-L6-v2"
 _model = None
+_model_lock = threading.Lock()
 
 
 def _get_model():
     """Load and return the sentence-transformer model on first match request."""
     global _model
     if _model is None:
-        try:
-            from sentence_transformers import SentenceTransformer
+        with _model_lock:
+            if _model is None:  # double-check locking
+                try:
+                    from sentence_transformers import SentenceTransformer
 
-            logger.info("Loading sentence-transformer model: %s", _MODEL_NAME)
-            _model = SentenceTransformer(_MODEL_NAME)
-            logger.info("Loaded sentence-transformer model: %s", _MODEL_NAME)
-        except Exception as exc:
-            logger.error("Failed to load sentence-transformer model: %s", exc)
-            raise RuntimeError(
-                f"Sentence-transformer model '{_MODEL_NAME}' is not loaded. "
-                "Install sentence-transformers and make sure the model is available."
-            ) from exc
+                    logger.info("Loading SentenceTransformer model: %s", _MODEL_NAME)
+                    _model = SentenceTransformer(_MODEL_NAME)
+                    logger.info("Model loaded successfully.")
+                except Exception as exc:
+                    logger.error("Failed to load sentence-transformer model: %s", exc)
+                    raise RuntimeError(
+                        f"Sentence-transformer model '{_MODEL_NAME}' is not loaded. "
+                        "Install sentence-transformers and make sure the model is available."
+                    ) from exc
     return _model
 
 
@@ -60,7 +64,7 @@ def _internship_to_text(required_skills_json: str, description: str) -> str:
             skills = json.loads(required_skills_json)
             skills_text = " ".join(skills)
         except (json.JSONDecodeError, TypeError):
-            skills_text = required_skills_json
+            skills_text = ""
 
     desc_snippet = (description or "")[:300]
     return f"{skills_text} {desc_snippet}".strip()
@@ -81,21 +85,32 @@ def compute_match_scores(
     student_text = " ".join(student_skills)
     student_vec = _encode(student_text)
 
-    results: List[Tuple[int, float]] = []
+    job_texts = []
+    valid_jobs = []
     for job in internships:
         job_text = _internship_to_text(
             required_skills_json=job.get("required_skills", ""),
             description=job.get("description", ""),
         )
-        if not job_text:
-            continue
+        if job_text:
+            job_texts.append(job_text)
+            valid_jobs.append(job)
 
-        job_vec = _encode(job_text)
+    if not job_texts:
+        return []
+
+    # Batch encode all job texts
+    model = _get_model()
+    job_vecs = model.encode(job_texts, normalize_embeddings=True, show_progress_bar=False)
+
+    results: List[Tuple[int, float]] = []
+    for job, job_vec in zip(valid_jobs, job_vecs):
         score = _cosine_similarity(student_vec, job_vec)
         results.append((job["id"], score))
 
     results.sort(key=lambda item: item[1], reverse=True)
     return results
+
 
 
 def get_matching_and_missing_skills(

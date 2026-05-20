@@ -43,7 +43,6 @@ export default function Register() {
       const { full_name, email, password, university, major } = form
       await register({ full_name, email, password, university, major })
       const { access_token } = await login({ email, password })
-      localStorage.setItem('auth_token', access_token)
       const user = await getMe()
       setAuth(access_token, user)
       toast.success(`Welcome to InternIQ, ${full_name.split(' ')[0]}! 🎉`)

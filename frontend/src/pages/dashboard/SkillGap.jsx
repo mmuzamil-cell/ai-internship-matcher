@@ -113,7 +113,14 @@ export default function SkillGap() {
         <p className="text-slate-400 mt-1">Skills the market demands that you should learn next</p>
       </div>
 
-      {error || missingSkills.length === 0 ? (
+      {error ? (
+        <EmptyState
+          icon="⚠️"
+          title="Something went wrong"
+          description="Could not load skill gap data. Please try again later."
+          action={<button onClick={() => window.location.reload()} className="btn-primary">Retry →</button>}
+        />
+      ) : missingSkills.length === 0 ? (
         <EmptyState
           icon="📄"
           title="Upload your resume first"

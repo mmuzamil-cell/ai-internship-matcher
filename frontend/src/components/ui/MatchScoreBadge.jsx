@@ -1,12 +1,9 @@
 import { getScoreColor, getScoreLabel } from '../../utils/formatScore'
 
-const RADIUS = 28
-const CIRCUMFERENCE = 2 * Math.PI * RADIUS
 
 export default function MatchScoreBadge({ score, size = 'md' }) {
   const colors = getScoreColor(score)
   const pct = Math.min(100, Math.max(0, score ?? 0))
-  const offset = CIRCUMFERENCE - (pct / 100) * CIRCUMFERENCE
 
   const sizes = {
     sm: { container: 'w-14 h-14', font: 'text-xs', svg: 64, r: 22, strokeW: 4 },

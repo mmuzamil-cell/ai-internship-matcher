@@ -67,9 +67,13 @@ export default function JobDetail() {
     toast.success(saved ? 'Removed from saved' : 'Saved for later!')
   }
 
-  const copyUrl = () => {
-    navigator.clipboard.writeText(window.location.href)
-    toast.success('Link copied!')
+  const copyUrl = async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href)
+      toast.success('Link copied!')
+    } catch {
+      toast.error('Could not copy link')
+    }
   }
 
   if (isLoading) {

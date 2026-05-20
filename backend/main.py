@@ -24,11 +24,12 @@ load_dotenv()
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 
 from database import Base, engine
+from rate_limit import limiter
 
 # ─── Logging Setup ────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -39,10 +40,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ─── Rate Limiter ─────────────────────────────────────────────────────────────
-# Uses the client's IP address as the rate limit key.
-# Limits are applied per-route using the @limiter.limit() decorator.
-limiter = Limiter(key_func=get_remote_address)
+
 
 
 # ─── Lifespan (Startup / Shutdown) ────────────────────────────────────────────
@@ -112,20 +110,23 @@ app.add_middleware(
 # ─── Error Response Standardization ───────────────────────────────────────────
 # FastAPI's default validation errors are verbose. This handler wraps them
 # in our consistent {detail, code} format for the frontend to parse easily.
-@app.exception_handler(404)
-async def not_found_handler(request: Request, exc):
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    if exc.status_code == 404:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": "The requested resource was not found.", "code": "NOT_FOUND"},
+        )
+    if exc.status_code >= 500:
+        logger.error("Server error: %s", exc.detail, exc_info=True)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": "An unexpected server error occurred.", "code": "INTERNAL_ERROR"},
+        )
+    # For other HTTP errors, return as-is
     return JSONResponse(
-        status_code=status.HTTP_404_NOT_FOUND,
-        content={"detail": "The requested resource was not found.", "code": "NOT_FOUND"},
-    )
-
-
-@app.exception_handler(500)
-async def server_error_handler(request: Request, exc):
-    logger.error("Unhandled server error: %s", exc, exc_info=True)
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"detail": "An unexpected server error occurred.", "code": "INTERNAL_ERROR"},
+        status_code=exc.status_code,
+        content={"detail": str(exc.detail)},
     )
 
 
@@ -137,11 +138,8 @@ from routes.jobs     import apps_router, jobs_router
 from routes.matching import router as match_router
 from routes.scraper  import router as scraper_router
 
-# Apply rate limit to the login route (5 requests per minute per IP)
-# The login function has a Request parameter so slowapi can extract the client IP
-LOGIN_RATE_LIMIT = os.getenv("LOGIN_RATE_LIMIT", "100/minute")  # Relaxed for dev
-from routes.auth import login as login_fn
-login_fn = limiter.limit(LOGIN_RATE_LIMIT)(login_fn)
+# Rate limiting is now applied directly via @limiter.limit() decorator
+# on the login function in routes/auth.py
 
 app.include_router(auth_router)
 app.include_router(resume_router)

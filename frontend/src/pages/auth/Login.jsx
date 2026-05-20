@@ -28,7 +28,6 @@ export default function Login() {
     setLoading(true)
     try {
       const { access_token } = await login(form)
-      localStorage.setItem('auth_token', access_token)
       const user = await getMe()
       setAuth(access_token, user)
       toast.success(`Welcome back, ${user.full_name?.split(' ')[0]}!`)
@@ -39,7 +38,10 @@ export default function Login() {
     } finally { setLoading(false) }
   }
 
-  const set = (field) => (e) => setForm({ ...form, [field]: e.target.value })
+  const set = (field) => (e) => {
+    setForm({ ...form, [field]: e.target.value })
+    if (errors[field]) setErrors({ ...errors, [field]: null })
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center px-4 py-16 relative">
@@ -72,7 +74,7 @@ export default function Login() {
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <label className="label mb-0">Password</label>
-                <button type="button" className="text-xs text-sky-400 hover:text-sky-300 transition-colors">Forgot password?</button>
+                <span className="text-xs text-slate-500 cursor-not-allowed" title="Coming soon">Forgot password?</span>
               </div>
               <input type="password" placeholder="••••••••" value={form.password}
                 onChange={set('password')} className="input-field" autoComplete="current-password" />

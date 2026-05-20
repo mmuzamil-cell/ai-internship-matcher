@@ -15,7 +15,7 @@ Security approach:
 """
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -27,8 +27,13 @@ from sqlalchemy.orm import Session
 
 from database import User, get_db
 from models.schemas import TokenResponse, UserCreate, UserResponse, UserUpdate
+from rate_limit import LOGIN_RATE_LIMIT, limiter
 
 load_dotenv()
+
+# Dummy bcrypt hash used for constant-time comparison when user is not found,
+# preventing timing attacks that reveal whether an email is registered.
+DUMMY_HASH = "$2b$12$LJ3m4ys4Bwl.kj1vJbRYwOVBzWjFy.jXJ2T.WzOFSt4bDwxl5kDNa"
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 SECRET_KEY: str  = os.getenv("SECRET_KEY", "")
@@ -72,7 +77,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     Authorization: Bearer <token> header.
     """
     payload = data.copy()
-    expire  = datetime.utcnow() + (expires_delta or timedelta(minutes=EXPIRE_MIN))
+    expire  = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=EXPIRE_MIN))
     payload.update({"exp": expire})
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -101,13 +106,17 @@ async def get_current_user(
     )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: Optional[int] = payload.get("sub")
-        if user_id is None:
+        user_id_raw: Optional[str] = payload.get("sub")
+        if user_id_raw is None:
+            raise credentials_error
+        try:
+            user_id = int(user_id_raw)
+        except (ValueError, TypeError):
             raise credentials_error
     except JWTError:
         raise credentials_error
 
-    user = db.query(User).filter(User.id == int(user_id)).first()
+    user = db.query(User).filter(User.id == user_id).first()
     if user is None:
         raise credentials_error
     return user
@@ -169,6 +178,7 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)):
     response_model=TokenResponse,
     summary="Login and receive a JWT access token",
 )
+@limiter.limit(LOGIN_RATE_LIMIT)
 def login(
     request: Request,  # Required by slowapi for IP-based rate limiting
     form_data: OAuth2PasswordRequestForm = Depends(),
@@ -187,10 +197,17 @@ def login(
 
     # Use constant-time comparison for both existence check and password verify
     # to prevent timing attacks that reveal whether an email is registered.
-    if not user or not verify_password(form_data.password, user.password_hash):
+    if not user:
+        verify_password(form_data.password, DUMMY_HASH)  # constant-time
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password.",
+            detail="Invalid email or password.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if not verify_password(form_data.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 

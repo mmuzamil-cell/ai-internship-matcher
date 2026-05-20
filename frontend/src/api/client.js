@@ -37,11 +37,14 @@ client.interceptors.request.use(
 )
 
 // Response interceptor: handle 401 and extract error messages
+let _isRedirecting = false
 client.interceptors.response.use(
   (response) => response,
   (error) => {
     const isLoginRequest = error.config?.url?.includes('/auth/login')
-    if (error.response?.status === 401 && !isLoginRequest && window.location.pathname !== '/login') {
+    const isOnLoginPage = window.location.pathname === '/login' || window.location.pathname.endsWith('/login')
+    if (error.response?.status === 401 && !isLoginRequest && !isOnLoginPage && !_isRedirecting) {
+      _isRedirecting = true
       localStorage.removeItem('auth_token')
       localStorage.removeItem('auth_user')
       window.location.href = '/login'

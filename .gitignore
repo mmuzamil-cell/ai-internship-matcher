@@ -12,3 +12,4 @@ frontend/dist/
 
 backend/uploads/
 scraper/logs/
+*.log

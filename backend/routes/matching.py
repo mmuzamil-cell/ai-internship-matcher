@@ -85,6 +85,79 @@ def _get_course_url(skill: str) -> str:
     return COURSE_URLS.get(skill.lower(), _DEFAULT_COURSE.format(skill=skill.replace(" ", "+")))
 
 
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+def ensure_match_scores(user_id: int, db: Session) -> bool:
+    """
+    Ensure match scores exist for the user and are up-to-date with active internships.
+    If they don't exist or are out of sync, compute and cache them.
+    Returns True if scores are ready, False otherwise.
+    """
+    # Count active internships
+    active_jobs_count = db.query(Internship).filter(Internship.is_active == True).count()
+    if active_jobs_count == 0:
+        return False
+
+    # Count cached scores for user
+    cached_scores_count = db.query(MatchScore).filter(MatchScore.user_id == user_id).count()
+
+    # If count matches, check if scores are still fresh (not stale from a resume update)
+    if cached_scores_count == active_jobs_count:
+        latest_resume = (
+            db.query(Resume)
+            .filter(Resume.user_id == user_id)
+            .order_by(Resume.uploaded_at.desc())
+            .first()
+        )
+        if latest_resume:
+            oldest_score = (
+                db.query(MatchScore)
+                .filter(MatchScore.user_id == user_id)
+                .order_by(MatchScore.computed_at.asc())
+                .first()
+            )
+            if oldest_score and latest_resume.uploaded_at > oldest_score.computed_at:
+                return False  # Scores were computed before latest resume upload
+        return True
+
+    # If not, let's recompute
+    resume = (
+        db.query(Resume)
+        .filter(Resume.user_id == user_id)
+        .order_by(Resume.uploaded_at.desc())
+        .first()
+    )
+    if not resume:
+        return False
+
+    student_skills = _parse_skills(resume.skills_json)
+    if len(student_skills) < 3:
+        logger.info("User %s has only %d skills, need ≥3 for matching", user_id, len(student_skills))
+        return False
+
+    jobs = db.query(Internship).filter(Internship.is_active == True).all()
+    jobs_data = [
+        {
+            "id":              j.id,
+            "required_skills": j.required_skills,
+            "description":     j.description or "",
+        }
+        for j in jobs
+    ]
+
+    logger.info("Computing match scores for user %d against %d jobs", user_id, len(jobs))
+    scored = compute_match_scores(student_skills, jobs_data)
+    if not scored:
+        return False
+
+    # Deleting old cached scores before inserting new ones
+    db.query(MatchScore).filter(MatchScore.user_id == user_id).delete()
+    for job_id, score in scored:
+        db.add(MatchScore(user_id=user_id, internship_id=job_id, score=score))
+    db.commit()
+    return True
+
+
 # ─── Routes ───────────────────────────────────────────────────────────────────
 
 @router.get(
@@ -99,14 +172,16 @@ def get_my_matches(
     """
     AI matching pipeline:
 
-    1. Load the student's most recently uploaded resume (latest uploaded_at).
-    2. Parse skills from skills_json.
-    3. Load all active internships from the database.
-    4. Run sentence-transformer cosine similarity for each internship.
-    5. Persist scores in match_scores (upsert: delete old, insert new).
-    6. Return top 20 results with per-internship skill breakdown.
+    1. Call ensure_match_scores to compute matches if missing or stale.
+    2. Load scores from the DB.
+    3. Return top 20 results with per-internship skill breakdown.
     """
-    # ── Step 1: Get latest resume ──────────────────────────────────────────────
+    # ── Ensure match scores are populated and fresh ───────────────────────────
+    has_scores = ensure_match_scores(current_user.id, db)
+    if not has_scores:
+        return []
+
+    # Get latest resume for skill calculations
     resume = (
         db.query(Resume)
         .filter(Resume.user_id == current_user.id)
@@ -114,63 +189,34 @@ def get_my_matches(
         .first()
     )
     if not resume:
-        # No resume uploaded yet — return empty list so the frontend shows an empty state
         return []
 
     student_skills = _parse_skills(resume.skills_json)
-    if len(student_skills) < 3:
-        # Not enough skills for reliable matching — return empty instead of 422
-        logger.info("User %s has only %d skills, need ≥3 for matching", current_user.id, len(student_skills))
-        return []
 
-    # ── Step 2: Load all active internships ────────────────────────────────────
-    jobs = db.query(Internship).filter(Internship.is_active == True).all()
-    if not jobs:
-        # No jobs in the database yet — return empty list
-        return []
-
-    # Convert to plain dicts for the matcher utility (avoids ORM session issues)
-    jobs_data = [
-        {
-            "id":              j.id,
-            "required_skills": j.required_skills,
-            "description":     j.description or "",
-        }
-        for j in jobs
-    ]
-
-    # ── Step 3: Compute similarity scores ─────────────────────────────────────
-    logger.info("Computing match scores for user %d against %d jobs", current_user.id, len(jobs))
-    scored = compute_match_scores(student_skills, jobs_data)   # List[(id, score)]
-
-    # ── Step 4: Persist scores to DB (delete old, insert new) ─────────────────
-    db.query(MatchScore).filter(MatchScore.user_id == current_user.id).delete()
-    for job_id, score in scored:
-        db.add(MatchScore(user_id=current_user.id, internship_id=job_id, score=score))
-    db.commit()
-
-    # ── Step 5: Build top-20 response ─────────────────────────────────────────
-    top_20_ids = [job_id for job_id, _ in scored[:20]]
-    score_map  = {job_id: score for job_id, score in scored}
-
-    # Fetch full internship objects for the top 20
-    top_jobs = {j.id: j for j in db.query(Internship).filter(Internship.id.in_(top_20_ids)).all()}
+    # ── Load top-20 matched internships (from pre-computed scores) ─────────────
+    top_scores = (
+        db.query(MatchScore)
+        .filter(MatchScore.user_id == current_user.id)
+        .order_by(MatchScore.score.desc())
+        .limit(20)
+        .all()
+    )
 
     results: List[MatchResult] = []
-    for job_id in top_20_ids:
-        job = top_jobs.get(job_id)
-        if not job:
+    for score_record in top_scores:
+        job = score_record.internship
+        if not job or not job.is_active:
             continue
 
         matching, missing = get_matching_and_missing_skills(
-            student_skills       = student_skills,
+            student_skills           = student_skills,
             job_required_skills_json = job.required_skills or "[]",
         )
 
         results.append(
             MatchResult(
                 internship      = _internship_to_schema(job),
-                score_percent   = round(score_map[job_id] * 100, 1),
+                score_percent   = round(score_record.score * 100, 1),
                 matching_skills = matching,
                 missing_skills  = missing,
             )
@@ -191,14 +237,17 @@ def get_skill_gap(
     """
     Skill gap analysis:
 
-    1. Load the student's latest resume skills.
+    1. Call ensure_match_scores to compute matches if missing or stale.
     2. Find the student's top-10 match_scores from the DB.
     3. For each of those 10 internships, compute missing skills (set difference).
     4. Count how frequently each missing skill appears across all 10 internships.
     5. Return the top missing skills with a suggested learning resource URL.
-
-    This helps students understand what to learn next to improve their match rate.
     """
+    # ── Ensure match scores are populated and fresh ───────────────────────────
+    has_scores = ensure_match_scores(current_user.id, db)
+    if not has_scores:
+        return SkillGapResponse(missing_skills=[])
+
     # ── Load student's skills ──────────────────────────────────────────────────
     resume = (
         db.query(Resume)
@@ -225,6 +274,8 @@ def get_skill_gap(
     missing_counter: Counter = Counter()
     for score_record in top_scores:
         job = score_record.internship
+        if not job or not job.is_active:
+            continue
         _, missing = get_matching_and_missing_skills(
             student_skills           = student_skills,
             job_required_skills_json = job.required_skills or "[]",
@@ -243,3 +294,4 @@ def get_skill_gap(
     ]
 
     return SkillGapResponse(missing_skills=gap_items)
+

@@ -16,17 +16,19 @@ Sources:
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 import httpx
 from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database import Internship, get_db
 from models.schemas import InternshipImportResponse, InternshipResponse
 from routes.auth import get_current_user
+from routes.jobs import _internship_to_schema, _parse_skills
 from utils.skill_extractor import extract_skills
 
 logger = logging.getLogger(__name__)
@@ -34,31 +36,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/scraper", tags=["Web Scraper"])
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
-
-def _parse_skills(skills_json: Optional[str]) -> List[str]:
-    if not skills_json:
-        return []
-    try:
-        return json.loads(skills_json)
-    except (json.JSONDecodeError, TypeError):
-        return []
-
-
-def _internship_to_schema(job: Internship) -> InternshipResponse:
-    return InternshipResponse(
-        id=job.id,
-        title=job.title,
-        company=job.company,
-        location=job.location,
-        description=job.description,
-        required_skills=_parse_skills(job.required_skills),
-        stipend=job.stipend,
-        deadline=job.deadline,
-        source_url=job.source_url,
-        source_site=job.source_site,
-        scraped_at=job.scraped_at,
-        is_active=job.is_active,
-    )
+# _parse_skills and _internship_to_schema are imported from routes.jobs
 
 
 def _dedupe_key(title: str, company: str, source_url: Optional[str]) -> tuple:
@@ -163,7 +141,7 @@ async def _scrape_remotive(keyword: str, limit: int, client: httpx.AsyncClient) 
                 "deadline": None,
                 "source_url": item.get("url"),
                 "source_site": "Remotive",
-                "scraped_at": datetime.utcnow(),
+                "scraped_at": datetime.now(timezone.utc),
                 "is_active": True,
             })
     except Exception as exc:
@@ -213,7 +191,7 @@ async def _scrape_arbeitnow(keyword: str, limit: int, client: httpx.AsyncClient)
                 "deadline": None,
                 "source_url": item.get("url"),
                 "source_site": "Arbeitnow",
-                "scraped_at": datetime.utcnow(),
+                "scraped_at": datetime.now(timezone.utc),
                 "is_active": True,
             })
             if len(jobs) >= limit:
@@ -241,6 +219,8 @@ async def _scrape_github_jobs(keyword: str, limit: int, client: httpx.AsyncClien
         lines = resp.text.split("\n")
         keyword_lower = keyword.lower()
         for line in lines:
+            if "🔒" in line:
+                continue  # Skip closed/expired positions
             if "|" not in line or "---" in line or "Company" in line:
                 continue
 
@@ -287,7 +267,7 @@ async def _scrape_github_jobs(keyword: str, limit: int, client: httpx.AsyncClien
                 "deadline": None,
                 "source_url": source_url,
                 "source_site": "GitHub/SimplifyJobs",
-                "scraped_at": datetime.utcnow(),
+                "scraped_at": datetime.now(timezone.utc),
                 "is_active": True,
             })
             if len(jobs) >= limit:
@@ -345,7 +325,7 @@ async def _scrape_findwork(keyword: str, limit: int, client: httpx.AsyncClient) 
                 "deadline": None,
                 "source_url": source_url,
                 "source_site": "FindWork.dev",
-                "scraped_at": datetime.utcnow(),
+                "scraped_at": datetime.now(timezone.utc),
                 "is_active": True,
             })
     except Exception as exc:
@@ -384,9 +364,15 @@ async def _scrape_himalayas(keyword: str, limit: int, client: httpx.AsyncClient)
             salary_max = item.get("maxSalary") or item.get("salary_max")
             salary = None
             if salary_min and salary_max:
-                salary = f"${salary_min:,} - ${salary_max:,}"
+                try:
+                    salary = f"${int(salary_min):,} - ${int(salary_max):,}"
+                except (ValueError, TypeError):
+                    salary = f"{salary_min} - {salary_max}"
             elif salary_min:
-                salary = f"From ${salary_min:,}"
+                try:
+                    salary = f"From ${int(salary_min):,}"
+                except (ValueError, TypeError):
+                    salary = f"From {salary_min}"
 
             categories = item.get("categories") or []
             source_url = item.get("applicationLink") or item.get("url") or None
@@ -412,7 +398,7 @@ async def _scrape_himalayas(keyword: str, limit: int, client: httpx.AsyncClient)
                 "deadline": None,
                 "source_url": source_url,
                 "source_site": "Himalayas",
-                "scraped_at": datetime.utcnow(),
+                "scraped_at": datetime.now(timezone.utc),
                 "is_active": True,
             })
             if len(jobs) >= limit:
@@ -488,7 +474,7 @@ async def scrape_internships(
         description="Comma-separated source keys (e.g., 'remotive,github') or 'all'",
     ),
     limit: int = Query(15, ge=1, le=50, description="Max results per source"),
-    _current_user=Depends(get_current_user),
+    _current_user=Depends(get_current_user),  # Any authenticated user can scrape
     db: Session = Depends(get_db),
 ):
     """
@@ -512,8 +498,8 @@ async def scrape_internships(
 
     # Build existing dedupe set
     existing = {
-        _dedupe_key(job.title, job.company, job.source_url)
-        for job in db.query(Internship).all()
+        _dedupe_key(r.title, r.company, r.source_url)
+        for r in db.query(Internship.title, Internship.company, Internship.source_url).all()
     }
 
     timeout = httpx.Timeout(25.0, connect=12.0)
@@ -587,12 +573,13 @@ def scraper_status(db: Session = Depends(get_db)):
     total = db.query(Internship).count()
     active = db.query(Internship).filter(Internship.is_active == True).count()
 
-    # Count by source
-    all_jobs = db.query(Internship).all()
-    by_source: dict[str, int] = {}
-    for job in all_jobs:
-        source = job.source_site or "Unknown"
-        by_source[source] = by_source.get(source, 0) + 1
+    # Count by source using SQL GROUP BY (avoids loading all rows into memory)
+    source_rows = (
+        db.query(Internship.source_site, func.count())
+        .group_by(Internship.source_site)
+        .all()
+    )
+    by_source = {(row[0] or "Unknown"): row[1] for row in source_rows}
 
     # Find latest scrape time
     latest = db.query(Internship).order_by(Internship.scraped_at.desc()).first()

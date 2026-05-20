@@ -90,7 +90,7 @@ function AppLayout() {
                 <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
 
                 {/* Redirects */}
-                <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                <Route path="/" element={<Navigate to={isAuthenticated ? "/dashboard" : "/login"} replace />} />
                 <Route path="*" element={<NotFound />} />
               </Routes>
             </motion.div>

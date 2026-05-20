@@ -28,3 +28,13 @@ export const saveCVAsResume = async (cvData) => {
   const res = await client.post('/resume/from-cv', cvData)
   return res.data
 }
+
+/**
+ * Fetch detailed ATS analysis feedback for a resume.
+ * @param {number} id - Resume ID
+ */
+export const getResumeFeedback = async (id) => {
+  const res = await client.get(`/resume/${id}/feedback`)
+  return res.data
+}
+

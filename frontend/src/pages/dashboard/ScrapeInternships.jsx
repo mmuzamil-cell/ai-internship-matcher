@@ -255,7 +255,7 @@ export default function ScrapeInternships() {
         ...prev,
         {
           time: new Date().toLocaleTimeString(),
-          message: `✅ Found ${data.imported} new internships from ${data.sources.join(', ')}${data.skipped ? ` (${data.skipped} duplicates skipped)` : ''}`,
+          message: `✅ Found ${data.imported ?? data.count ?? 0} new internships from ${(data.sources || ['external APIs']).join(', ')}${data.skipped ? ` (${data.skipped} duplicates skipped)` : ''}`,
           type: 'success',
         },
       ])

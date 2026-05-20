@@ -69,8 +69,14 @@ export default function Dashboard() {
     ? Math.round(flatMatches.slice(0, 5).reduce((a, m) => a + (m.match_score || 0), 0) / Math.min(5, flatMatches.length))
     : null
 
-  const skillsMatched = flatMatches[0]?.matched_skills?.length || 0
-  const skillsMissing = flatMatches[0]?.missing_skills?.length || 0
+  const allMatchedSkills = new Set()
+  const allMissingSkills = new Set()
+  flatMatches.forEach((m) => {
+    ;(m.matched_skills || []).forEach((s) => allMatchedSkills.add(s))
+    ;(m.missing_skills || []).forEach((s) => allMissingSkills.add(s))
+  })
+  const skillsMatched = allMatchedSkills.size
+  const skillsMissing = allMissingSkills.size
 
   const donutData = {
     labels: ['Matched', 'Missing'],

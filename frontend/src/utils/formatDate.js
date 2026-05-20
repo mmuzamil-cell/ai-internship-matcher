@@ -2,12 +2,14 @@
 export const formatDate = (dateStr) => {
   if (!dateStr) return '—'
   const date = new Date(dateStr)
+  if (isNaN(date.getTime())) return '—'
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
 export const formatDeadline = (dateStr) => {
   if (!dateStr) return null
   const deadline = new Date(dateStr)
+  if (isNaN(deadline.getTime())) return null
   const now = new Date()
   const diff = Math.ceil((deadline - now) / (1000 * 60 * 60 * 24))
   if (diff < 0) return { label: 'Expired', urgent: true }
@@ -20,6 +22,7 @@ export const formatDeadline = (dateStr) => {
 export const formatRelativeTime = (dateStr) => {
   if (!dateStr) return '—'
   const date = new Date(dateStr)
+  if (isNaN(date.getTime())) return '—'
   const now = new Date()
   const diff = now - date
   const seconds = Math.floor(diff / 1000)

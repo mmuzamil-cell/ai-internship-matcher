@@ -47,7 +47,7 @@ KNOWN_SKILLS: dict[str, List[str]] = {
     "java":             ["java"],
     "c++":              ["c++", "cpp", "c plus plus"],
     "c#":               ["c#", "csharp", "c sharp"],
-    "go":               ["golang", "go"],
+    "go":               ["golang"],
     "rust":             ["rust"],
     "swift":            ["swift"],
     "kotlin":           ["kotlin"],
@@ -101,7 +101,7 @@ KNOWN_SKILLS: dict[str, List[str]] = {
     "numpy":            ["numpy"],
     "data analysis":    ["data analysis", "data analytics", "statistical analysis"],
     "natural language processing": ["nlp", "natural language processing"],
-    "computer vision":  ["computer vision", "cv", "image processing"],
+    "computer vision":  ["computer vision", "image processing"],
     "tableau":          ["tableau"],
     "power bi":         ["power bi", "powerbi"],
 
@@ -122,6 +122,11 @@ for canonical, aliases in KNOWN_SKILLS.items():
     _ALIAS_TO_CANONICAL[canonical.lower()] = canonical
     for alias in aliases:
         _ALIAS_TO_CANONICAL[alias.lower()] = canonical
+
+# Prevent short canonical names from causing false positives
+for short_name in ("go", "r", "c"):
+    if short_name in _ALIAS_TO_CANONICAL and short_name == _ALIAS_TO_CANONICAL[short_name]:
+        del _ALIAS_TO_CANONICAL[short_name]
 
 
 def _normalize(text: str) -> str:

@@ -125,7 +125,7 @@ export default function Chatbot() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, loading])
+  }, [messages, loading, open])
 
   useEffect(() => {
     localStorage.setItem(CHAT_KEY, JSON.stringify(messages.slice(-30)))

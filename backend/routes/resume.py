@@ -16,11 +16,12 @@ import aiofiles
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
-from database import Resume, get_db
+from database import Resume, MatchScore, get_db
 from models.schemas import ResumeResponse
 from routes.auth import get_current_user
 from utils.pdf_parser import extract_text_from_pdf
 from utils.skill_extractor import extract_skills
+from utils.resume_analyzer import analyze_resume
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/resume", tags=["Resume"])
@@ -74,18 +75,20 @@ async def upload_resume(
       6. Return the skill list and match_ready flag.
     """
     # ── Validate file type ────────────────────────────────────────────────────
-    if not file.filename.lower().endswith(".pdf"):
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Only PDF files are accepted. Please upload a .pdf resume.",
         )
 
     # ── Read file bytes & check size ──────────────────────────────────────────
-    file_bytes = await file.read()
+    # Read only up to the limit + 1 byte to detect oversized files without
+    # loading the entire payload into memory (prevents DoS via huge uploads).
+    file_bytes = await file.read(MAX_FILE_SIZE + 1)
     if len(file_bytes) > MAX_FILE_SIZE:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File exceeds the 5 MB size limit. Please compress your PDF.",
+            detail="File exceeds the 5 MB size limit. Please compress your PDF.",
         )
 
     # ── Extract text from PDF ──────────────────────────────────────────────────
@@ -108,10 +111,19 @@ async def upload_resume(
     # Create directory if it doesn't exist (safe for concurrent requests)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Sanitize filename: replace spaces, prepend user ID for namespacing
-    safe_name  = file.filename.replace(" ", "_")
+    # Sanitize filename: strip directory components to prevent path traversal,
+    # replace spaces, and prepend user ID for namespacing.
+    raw_name   = Path(file.filename).name          # Strip any directory components
+    safe_name  = raw_name.replace(" ", "_")
     save_name  = f"user_{current_user.id}_{safe_name}"
-    save_path  = UPLOAD_DIR / save_name
+    save_path  = (UPLOAD_DIR / save_name).resolve()
+
+    # Guard against path traversal (e.g., filenames containing "..")
+    if not str(save_path).startswith(str(UPLOAD_DIR.resolve())):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid filename.",
+        )
 
     # Write asynchronously to avoid blocking the event loop
     async with aiofiles.open(save_path, "wb") as out_file:
@@ -128,6 +140,8 @@ async def upload_resume(
         skills_json    = skills_json,
     )
     db.add(resume)
+    # Clear old match scores to prevent stale matches and skill-gaps
+    db.query(MatchScore).filter(MatchScore.user_id == current_user.id).delete()
     db.commit()
     db.refresh(resume)
 
@@ -187,12 +201,16 @@ def delete_resume(
         )
 
     # Delete the file from disk (fail gracefully if file is already missing)
-    file_path = Path(resume.file_path)
-    if file_path.exists():
-        file_path.unlink()
-        logger.info("Deleted resume file: %s", file_path)
-    else:
-        logger.warning("Resume file not found on disk (already deleted?): %s", file_path)
+    if resume.file_path != "cv_builder":
+        file_path = Path(resume.file_path)
+        if file_path.exists():
+            try:
+                file_path.unlink()
+                logger.info("Deleted resume file: %s", file_path)
+            except Exception as e:
+                logger.error("Could not delete resume file from disk: %s", e)
+        else:
+            logger.warning("Resume file not found on disk (already deleted?): %s", file_path)
 
     # Delete the DB record
     db.delete(resume)
@@ -316,14 +334,17 @@ def save_cv_as_resume(
     skills_json = json.dumps(all_skills)
 
     # ── Save as Resume record ─────────────────────────────────────────────────
+    name_slug = cv.name.strip().replace(' ', '_') or 'resume'
     resume = Resume(
         user_id=current_user.id,
-        filename=f"cv_builder_{cv.name.replace(' ', '_') or 'resume'}.pdf",
+        filename=f"cv_builder_{name_slug}.pdf",
         file_path="cv_builder",  # No physical file
         extracted_text=full_text,
         skills_json=skills_json,
     )
     db.add(resume)
+    # Clear old match scores to prevent stale matches and skill-gaps
+    db.query(MatchScore).filter(MatchScore.user_id == current_user.id).delete()
     db.commit()
     db.refresh(resume)
 
@@ -333,4 +354,42 @@ def save_cv_as_resume(
     )
 
     return _build_resume_response(resume)
+
+
+@router.get(
+    "/{resume_id}/feedback",
+    summary="Get ATS analysis and feedback for a resume",
+)
+async def get_resume_feedback(
+    resume_id: int,
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Generate detailed critique and suggestions for the specified resume.
+    Uses rule-based heuristics or OpenAI GPT-4o-mini if configured.
+    """
+    resume = db.query(Resume).filter(Resume.id == resume_id).first()
+    if not resume:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Resume with id={resume_id} not found."
+        )
+
+    # Ownership check
+    if resume.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to view feedback for this resume."
+        )
+
+    if not resume.extracted_text:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Resume has no extracted text to analyze."
+        )
+
+    analysis = await analyze_resume(resume.extracted_text)
+    return analysis
+
 

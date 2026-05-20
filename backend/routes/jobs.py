@@ -16,7 +16,7 @@ Application Endpoints:
 import json
 import logging
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 import httpx
@@ -118,7 +118,7 @@ def _normalize_external_job(raw: dict) -> Optional[dict]:
         "deadline": None,
         "source_url": source_url,
         "source_site": source,
-        "scraped_at": datetime.utcnow(),
+        "scraped_at": datetime.now(timezone.utc),
         "is_active": True,
     }
 
@@ -252,19 +252,22 @@ def list_jobs(
 
     # City filter — case-insensitive substring match
     if city:
-        query = query.filter(Internship.location.ilike(f"%{city}%"))
+        escaped_city = city.replace("%", "\\%").replace("_", "\\_")
+        query = query.filter(Internship.location.ilike(f"%{escaped_city}%"))
 
     # Remote filter — checks for "remote" in location string
     if remote is True:
         query = query.filter(Internship.location.ilike("%remote%"))
 
-    jobs = query.order_by(Internship.scraped_at.desc()).offset(offset).limit(limit).all()
-
     # Skill filter is done in Python because skills are stored as a JSON string.
-    # For production with large datasets, consider a separate skills table with an index.
+    # We must filter BEFORE pagination to return the correct number of results.
     if skill:
         skill_lower = skill.lower()
-        jobs = [j for j in jobs if skill_lower in [s.lower() for s in _parse_skills(j.required_skills)]]
+        all_matching = query.order_by(Internship.scraped_at.desc()).all()
+        all_matching = [j for j in all_matching if skill_lower in [s.lower() for s in _parse_skills(j.required_skills)]]
+        jobs = all_matching[offset : offset + limit]
+    else:
+        jobs = query.order_by(Internship.scraped_at.desc()).offset(offset).limit(limit).all()
 
     return [_internship_to_schema(j) for j in jobs]
 
@@ -326,7 +329,7 @@ def create_job(
 async def import_external_jobs(
     keyword: str = Query("internship", min_length=2, max_length=80),
     limit: int = Query(20, ge=1, le=50),
-    _current_user=Depends(get_current_user),
+    _current_user=Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     """
@@ -344,8 +347,8 @@ async def import_external_jobs(
         )
 
     existing = {
-        _dedupe_key(job.title, job.company, job.source_url)
-        for job in db.query(Internship).all()
+        _dedupe_key(r.title, r.company, r.source_url)
+        for r in db.query(Internship.title, Internship.company, Internship.source_url).all()
     }
 
     imported_jobs: list[Internship] = []
